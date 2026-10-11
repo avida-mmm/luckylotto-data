@@ -11,7 +11,7 @@ on:
         default: false
 
 permissions:
-  contents: write   # out/을 저장소에 커밋해 다음 실행 때 이어받는다
+  contents: write   # data-server/out/을 저장소에 커밋해 다음 실행 때 이어받는다
   pages: write
   id-token: write
 
@@ -27,20 +27,20 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
 
       - name: 동행복권 데이터 받기
-        run: node build.mjs ${{ inputs.force_stores && '--force-stores' || '' }}
+        run: node data-server/build.mjs ${{ inputs.force_stores && '--force-stores' || '' }}
 
       - name: 결과 저장
         run: |
           git config user.name "haengtto-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add out
+          git add data-server/out
           git diff --cached --quiet || git commit -m "데이터 업데이트 $(date -u +%F)"
           git push
 
@@ -48,7 +48,7 @@ jobs:
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: out
+          path: data-server/out
 
       - id: deployment
         uses: actions/deploy-pages@v4

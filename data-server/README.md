@@ -22,17 +22,18 @@
 ## 처음 설정하기
 
 1. GitHub에서 **공개(Public)** 저장소를 만들어요. 예: `haengtto-data` (무료 GitHub Pages는 공개 저장소에서만 돼요. 이 저장소에는 데이터 수집 코드만 들어가요.)
-2. 이 폴더의 파일을 저장소 맨 위에 올려요: `build.mjs`, `README.md`, `.github/workflows/update-data.yml`
+2. 저장소에 이렇게 올려요: `data-server/build.mjs`, `data-server/README.md`, `.github/workflows/update-data.yml`
+   (workflow는 `data-server/` 아래의 수집기를 실행하고, 결과는 `data-server/out/`에 만들어요)
 3. 저장소 **Settings → Pages → Build and deployment → Source**를 **GitHub Actions**로 바꿔요.
 4. **Settings → Actions → General → Workflow permissions**를 **Read and write permissions**로 바꿔요.
 5. **Actions** 탭에서 "행또 데이터 업데이트"를 열고 **Run workflow**로 첫 실행을 해요.
-6. 끝나면 `https://{GitHub 아이디}.github.io/haengtto-data/meta.json`이 열리는지 확인해요.
-7. 앱의 `js/data-source.js`에 있는 `PUBLISHED_URL`에 `https://{GitHub 아이디}.github.io/haengtto-data/`를 넣어요.
+6. 끝나면 `https://{GitHub 아이디}.github.io/{저장소 이름}/meta.json`이 열리는지 확인해요.
+7. 앱의 `js/data-source.js`에 있는 `PUBLISHED_URL`에 `https://{GitHub 아이디}.github.io/{저장소 이름}/`를 넣어요.
 
 ## 로컬에서 실행
 
 ```bash
-node build.mjs --province=서울 --district=서초구
+node data-server/build.mjs --province=서울 --district=서초구
 ```
 
 Node.js 18 이상이 필요해요(외부 패키지 없음). 옵션: `--province=서울` 일부 시·도만, `--district=서초구` 일부 시·군·구만,
