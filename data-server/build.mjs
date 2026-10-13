@@ -29,6 +29,7 @@ const TOP_LIMIT = 200;
 const WHOLE = "전체";
 const warnings = [];
 const STORES_MAX_AGE_DAYS = 28;
+const COOLDOWN_MS = 120000;  // 판매점 조회가 실패하면 이만큼 쉬었다가 계속한다
 
 // [지역 목록 조회용 전체 이름, 판매점 조회용 줄인 이름] (앱의 js/stores.js와 같아야 한다)
 const PROVINCES = [
@@ -207,8 +208,12 @@ async function fetchDistrictStores(short, district) {
 }
 
 // 한 시·도나 시·군·구가 실패해도 전체를 멈추지 않는다. 실패한 곳은 지난번 데이터를 그대로 두고 경고로 남긴다.
-async function buildStores(provinces) {
+// only: { 줄인 시·도 이름: [시·군·구...] | null(전체) } 를 주면 그 곳만 다시 받는다.
+// 돌려주는 값: 실패한 곳 목록 [{ province, district|null }]
+async function buildStores(provinces, only) {
+  const failed = [];
   for (const [full, short] of provinces) {
+    if (only && !(short in only)) continue;
     const file = `stores/${short}.json`;
     const previous = await readJson(file, {});
     let districts;
@@ -218,20 +223,42 @@ async function buildStores(provinces) {
       if (!districts.length) districts = [WHOLE];
     } catch (err) {
       warn(`판매점 ${short} 지역 목록 실패, 지난 데이터 유지: ${err.message}`);
+      failed.push({ province: short, district: null });
+      await cooldown();
       continue;
     }
     const data = { districts, stores: previous.stores ?? {} };
+    const targets = only?.[short];
     for (const district of districts) {
       if (args.district && district !== args.district) continue;
+      if (targets && !targets.includes(district)) continue;
       try {
         data.stores[district] = await fetchDistrictStores(short, district);
         console.log(`판매점 ${short} ${district}: ${data.stores[district].length}곳`);
       } catch (err) {
         warn(`판매점 ${short} ${district} 실패, 지난 데이터 유지: ${err.message}`);
+        failed.push({ province: short, district });
+        await cooldown();
       }
     }
     await writeJson(file, data);
   }
+  return failed;
+}
+
+// 연속으로 실패하면 사이트가 잠시 막은 경우가 많다. 한참 쉬었다가 이어서 받는다.
+async function cooldown() {
+  console.warn(`  ${COOLDOWN_MS / 1000}초 쉬었다가 계속`);
+  await sleep(COOLDOWN_MS);
+}
+
+function toOnly(list) {
+  const only = {};
+  for (const { province, district } of list) {
+    if (district === null) only[province] = null;
+    else if (only[province] !== null) (only[province] ??= []).push(district);
+  }
+  return only;
 }
 
 function warn(message) {
@@ -254,18 +281,34 @@ if (!args["skip-wins"]) {
 const meta = await readJson("meta.json", {});
 const storesAgeDays = meta.storesUpdatedAt ? (Date.now() - Date.parse(meta.storesUpdatedAt)) / 86400000 : Infinity;
 let storesUpdatedAt = meta.storesUpdatedAt;
+// 지난번에 못 받은 판매점 지역. 다음 실행 때 먼저 다시 받는다.
+let storesPending = meta.storesPending ?? [];
 if (args["skip-stores"]) {
   console.log("판매점 목록: 건너뜀");
 } else if (!args["force-stores"] && !args.province && storesAgeDays < STORES_MAX_AGE_DAYS) {
-  console.log(`판매점 목록: ${Math.floor(storesAgeDays)}일 전에 받아서 건너뜀 (${STORES_MAX_AGE_DAYS}일마다 새로 받음)`);
+  if (storesPending.length) {
+    console.log(`판매점 목록: 지난번에 못 받은 ${storesPending.length}곳만 다시 받음`);
+    storesPending = await buildStores(provinces, toOnly(storesPending));
+  } else {
+    console.log(`판매점 목록: ${Math.floor(storesAgeDays)}일 전에 받아서 건너뜀 (${STORES_MAX_AGE_DAYS}일마다 새로 받음)`);
+  }
 } else {
-  await buildStores(provinces);
-  if (!args.province) storesUpdatedAt = new Date().toISOString();
+  let failed = await buildStores(provinces);
+  if (failed.length) {
+    console.log(`판매점 목록: 실패한 ${failed.length}곳을 한 번 더 받음`);
+    await cooldown();
+    failed = await buildStores(provinces, toOnly(failed));
+  }
+  if (!args.province) {
+    storesUpdatedAt = new Date().toISOString();
+    storesPending = failed;
+  }
 }
 
 await writeJson("meta.json", {
   ...meta,
   storesUpdatedAt,
+  storesPending,
   version: 1,
   updatedAt: new Date().toISOString(),
   latestRound: latest,
