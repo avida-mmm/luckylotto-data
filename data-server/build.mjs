@@ -25,6 +25,9 @@ const BASE = "https://www.dhlottery.co.kr";
 const DELAY_MS = 800;        // 요청 사이 간격. 사이트에 부담을 주지 않도록 천천히 받는다.
 const PAGE_SIZE = 10;        // 판매점 조회는 한 번에 10곳씩만 준다
 const TOP_LIMIT = 200;
+// 세종처럼 시·군·구가 없는 곳은 지역 목록이 [null]로 온다. "전체" 하나로 두고, 조회할 땐 빈 값으로 보낸다. (앱의 js/stores.js와 같아야 한다)
+const WHOLE = "전체";
+const warnings = [];
 const STORES_MAX_AGE_DAYS = 28;
 
 // [지역 목록 조회용 전체 이름, 판매점 조회용 줄인 이름] (앱의 js/stores.js와 같아야 한다)
@@ -99,7 +102,7 @@ async function buildDraws(latest) {
     for (let r = round; r > round - 10 && r >= 1; r--) if (!draws[r]) need.push(r);
     if (!need.length) continue;
     const json = await getJson("/lt645/selectPstLt645InfoNew.do", { srchLtEpsd: String(round) });
-    for (const item of json?.data?.list ?? []) draws[item.ltEpsd] = parseDraw(item);
+    for (const item of (json?.data?.list ?? []).filter(Boolean)) draws[item.ltEpsd] = parseDraw(item);
     fetched++;
   }
   await writeJson("draws.json", draws);
@@ -114,13 +117,21 @@ function storeKey(address, name) {
   return (m[1] + m[2]).replace(/\s/g, "") + "|" + String(name).replace(/\s/g, "");
 }
 
+let failedWins = false;
+
 async function buildWins(provinces) {
   const all = [];
   for (const [, short] of provinces) {
     const records = [];
-    for (const region of WIN_REGIONS[short] ?? [short]) {
-      const json = await getJson("/wnprchsplcsrch/selectLtWnShp.do", { srchWnShpRnk: "1", srchLtEpsd: "", srchShpLctn: region });
-      records.push(...(json?.data?.list ?? []));
+    try {
+      for (const region of WIN_REGIONS[short] ?? [short]) {
+        const json = await getJson("/wnprchsplcsrch/selectLtWnShp.do", { srchWnShpRnk: "1", srchLtEpsd: "", srchShpLctn: region });
+        records.push(...(json?.data?.list ?? []).filter(Boolean));
+      }
+    } catch (err) {
+      warn(`1등 기록 ${short} 실패, 지난 데이터 유지: ${err.message}`);
+      failedWins = true;
+      continue;
     }
     const counts = { id: {}, key: {} };
     for (const r of records) {
@@ -182,32 +193,50 @@ function toStore(item) {
 
 async function fetchDistrictStores(short, district) {
   const params = (page) => ({
-    srchCtpvNm: short, srchSggNm: district, l645LtNtslYn: "Y", l520LtNtslYn: "N", st5LtNtslYn: "N",
+    srchCtpvNm: short, srchSggNm: district === WHOLE ? "" : district, l645LtNtslYn: "Y", l520LtNtslYn: "N", st5LtNtslYn: "N",
     st10LtNtslYn: "N", st20LtNtslYn: "N", cpexUsePsbltyYn: "N", pageNum: String(page), recordCountPerPage: String(PAGE_SIZE), pageCount: "5"
   });
   const first = await getJson("/prchsplcsrch/selectLtShp.do", params(1));
   const total = Number(first?.data?.total) || 0;
-  const list = (first?.data?.list ?? []).map(toStore);
+  const list = (first?.data?.list ?? []).filter(Boolean).map(toStore);
   for (let page = 2; page <= Math.ceil(total / PAGE_SIZE); page++) {
     const json = await getJson("/prchsplcsrch/selectLtShp.do", params(page));
-    list.push(...(json?.data?.list ?? []).map(toStore));
+    list.push(...(json?.data?.list ?? []).filter(Boolean).map(toStore));
   }
   return list.filter((s) => s.lat && s.lng);
 }
 
+// 한 시·도나 시·군·구가 실패해도 전체를 멈추지 않는다. 실패한 곳은 지난번 데이터를 그대로 두고 경고로 남긴다.
 async function buildStores(provinces) {
   for (const [full, short] of provinces) {
-    const json = await getJson("/prchsplcsrch/selectAdmdst.do", { srchCtpvNm: full });
-    const districts = (json?.data?.list ?? []).map((x) => x.sggNm);
     const file = `stores/${short}.json`;
-    const data = { districts, stores: (await readJson(file, {})).stores ?? {} };
+    const previous = await readJson(file, {});
+    let districts;
+    try {
+      const json = await getJson("/prchsplcsrch/selectAdmdst.do", { srchCtpvNm: full });
+      districts = (json?.data?.list ?? []).filter(Boolean).map((x) => x.sggNm).filter(Boolean);
+      if (!districts.length) districts = [WHOLE];
+    } catch (err) {
+      warn(`판매점 ${short} 지역 목록 실패, 지난 데이터 유지: ${err.message}`);
+      continue;
+    }
+    const data = { districts, stores: previous.stores ?? {} };
     for (const district of districts) {
       if (args.district && district !== args.district) continue;
-      data.stores[district] = await fetchDistrictStores(short, district);
-      console.log(`판매점 ${short} ${district}: ${data.stores[district].length}곳`);
+      try {
+        data.stores[district] = await fetchDistrictStores(short, district);
+        console.log(`판매점 ${short} ${district}: ${data.stores[district].length}곳`);
+      } catch (err) {
+        warn(`판매점 ${short} ${district} 실패, 지난 데이터 유지: ${err.message}`);
+      }
     }
     await writeJson(file, data);
   }
+}
+
+function warn(message) {
+  warnings.push(message);
+  console.warn("⚠️ " + message);
 }
 
 // ---------- 실행 ----------
@@ -220,7 +249,7 @@ if (!args["skip-draws"]) await buildDraws(latest);
 if (!args["skip-wins"]) {
   const records = await buildWins(provinces);
   // 전국 순위는 모든 시·도를 받았을 때만 새로 만든다
-  if (!args.province) await writeJson("top-stores.json", { latestRound: latest, stores: buildTop(records) });
+  if (!args.province && !failedWins) await writeJson("top-stores.json", { latestRound: latest, stores: buildTop(records) });
 }
 const meta = await readJson("meta.json", {});
 const storesAgeDays = meta.storesUpdatedAt ? (Date.now() - Date.parse(meta.storesUpdatedAt)) / 86400000 : Infinity;
@@ -240,6 +269,7 @@ await writeJson("meta.json", {
   version: 1,
   updatedAt: new Date().toISOString(),
   latestRound: latest,
-  provinces: PROVINCES.map((p) => p[1])
+  provinces: PROVINCES.map((p) => p[1]),
+  warnings
 });
-console.log(`완료: ${Math.round((Date.now() - started) / 1000)}초, 결과 → ${OUT}`);
+console.log(`완료: ${Math.round((Date.now() - started) / 1000)}초, 경고 ${warnings.length}건, 결과 → ${OUT}`);
